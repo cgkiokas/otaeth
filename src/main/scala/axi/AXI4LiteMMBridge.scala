@@ -2,21 +2,28 @@ package main.scala.axi
 
 import chisel3._
 import chisel3.util._
+import main.scala.controller.Controller
+import ocp._
 
 
+class CoreDeviceIO() extends Bundle {
+  val ocp = new OcpCoreSlavePort(32, 32)
+}
 
+//object AXI4LiteMMBridge {
+//  var extAddrWidth = 32
+//  var dataWidth = 32
+//
+//
+//  def create(params: Map[String, String]): AXI4LiteMMBridge = {
+//    Module(new AXI4LiteMMBridge(extAddrWidth, dataWidth))
+//  }
+//
+//}
 
-class AXI4LiteMMBridge(addrWidth: Int = 32, dataWidth: Int = 32) extends Module {
-  val io = IO(new Bundle() {
-      //Control Signals
-      val read = Input(Bool())
-      val write = Input(Bool())
-      val address = Input(UInt(addrWidth.W))
-      val data = Input(UInt(dataWidth.W))
-      val slaveData = Output(UInt(dataWidth.W))
-      val byteEn = Input(UInt((dataWidth/4).W))
-      val dataValid = Output(Bool())
-      //AXI Signals
+class AXI4LiteMMBridge(addrWidth: Int = 32, dataWidth: Int = 32) extends Module() {
+  val io = IO(new CoreDeviceIO() {
+    val pins = new Bundle() {
       val araddr = Output(UInt(addrWidth.W))
       val arready = Input(Bool())
       val arvalid = Output(Bool())
@@ -34,87 +41,93 @@ class AXI4LiteMMBridge(addrWidth: Int = 32, dataWidth: Int = 32) extends Module 
       val wready = Input(Bool())
       val wstrb = Output(UInt((dataWidth / 8).W))
       val wvalid = Output(Bool())
+
+    }
   })
 
   val mAxiPort = Wire(new AxiLiteMasterPort(addrWidth, dataWidth))
   mAxiPort.ar.bits.prot := 0.U
   mAxiPort.aw.bits.prot := 0.U
 
+  val mOcpReg = RegInit(io.ocp.M)
   val holdBusyReg = RegInit(false.B)
 
   // For simplicity we register new commands only when the AXI slave has answered fully
+  when(~holdBusyReg) {
+    mOcpReg := io.ocp.M
+  }
 
   when(~holdBusyReg) {
-    when(io.read) {
+    when(io.ocp.M.Cmd === OcpCmd.RD) {
       holdBusyReg := ~mAxiPort.ar.ready
-    }.elsewhen(io.write) {
+    }.elsewhen(io.ocp.M.Cmd === OcpCmd.WR) {
       holdBusyReg := ~mAxiPort.aw.ready && ~mAxiPort.w.ready
     }
   }.otherwise {
-    when(io.read) {
+    when(mOcpReg.Cmd === OcpCmd.RD) {
       holdBusyReg := ~mAxiPort.ar.ready
-    }.elsewhen(io.write) {
+    }.elsewhen(mOcpReg.Cmd === OcpCmd.WR) {
       holdBusyReg := ~mAxiPort.aw.ready && ~mAxiPort.w.ready
     }
   }
 
   // Write channel
-  mAxiPort.aw.valid := io.write && holdBusyReg
-  mAxiPort.aw.bits.addr :=io.address
-  mAxiPort.w.valid := io.write && holdBusyReg
-  mAxiPort.w.bits.data := io.data
-  mAxiPort.w.bits.strb := io.byteEn
+  mAxiPort.aw.valid := mOcpReg.Cmd === OcpCmd.WR && holdBusyReg
+  mAxiPort.aw.bits.addr := mOcpReg.Addr
+  mAxiPort.w.valid := mOcpReg.Cmd === OcpCmd.WR && holdBusyReg
+  mAxiPort.w.bits.data := mOcpReg.Data
+  mAxiPort.w.bits.strb := mOcpReg.ByteEn
 
   // Read channel
-  mAxiPort.ar.bits.addr := io.address
-  mAxiPort.ar.valid := io.read && holdBusyReg
+  mAxiPort.ar.bits.addr := mOcpReg.Addr
+  mAxiPort.ar.valid := mOcpReg.Cmd === OcpCmd.RD && holdBusyReg
   mAxiPort.r.ready := true.B // the ocp bus is always ready to accept data
   mAxiPort.b.ready := true.B
 
   // Drive OCP slave
-  io.slaveData := mAxiPort.r.bits.data
+  io.ocp.S.Data := mAxiPort.r.bits.data
 
-  io.dataValid:= Mux(mAxiPort.b.valid || mAxiPort.r.valid, true.B, false.B)
+  io.ocp.S.Resp := Mux(mAxiPort.b.valid || mAxiPort.r.valid, OcpResp.DVA, OcpResp.NULL)
 
   //  // Xilinx naming convention for nice block diagrams and inferring interfaces
   //  // TODO: investigate erroneous generated Verilog
 
-  io.araddr.suggestName("m_axi_araddr")
-  io.arready.suggestName("m_axi_arready")
-  io.arvalid.suggestName("m_axi_arvalid")
-  io.awaddr.suggestName("m_axi_awaddr")
-  io.awready.suggestName("m_axi_awready")
-  io.awvalid.suggestName("m_axi_awvalid")
-  io.bready.suggestName("m_axi_bready")
-  io.bresp.suggestName("m_axi_bresp")
-  io.bvalid.suggestName("m_axi_bvalid")
-  io.rready.suggestName("m_axi_rready")
-  io.rdata.suggestName("m_axi_rdata")
-  io.rvalid.suggestName("m_axi_rvalid")
-  io.rresp.suggestName("m_axi_rresp")
-  io.wdata.suggestName("m_axi_wdata")
-  io.wready.suggestName("m_axi_wready")
-  io.wstrb.suggestName("m_axi_wstrb")
-  io.wvalid.suggestName("m_axi_wvalid")
+  io.pins.araddr.suggestName("m_axi_araddr")
+  io.pins.arready.suggestName("m_axi_arready")
+  io.pins.arvalid.suggestName("m_axi_arvalid")
+  io.pins.awaddr.suggestName("m_axi_awaddr")
+  io.pins.awready.suggestName("m_axi_awready")
+  io.pins.awvalid.suggestName("m_axi_awvalid")
+  io.pins.bready.suggestName("m_axi_bready")
+  io.pins.bresp.suggestName("m_axi_bresp")
+  io.pins.bvalid.suggestName("m_axi_bvalid")
+  io.pins.rready.suggestName("m_axi_rready")
+  io.pins.rdata.suggestName("m_axi_rdata")
+  io.pins.rvalid.suggestName("m_axi_rvalid")
+  io.pins.rresp.suggestName("m_axi_rresp")
+  io.pins.wdata.suggestName("m_axi_wdata")
+  io.pins.wready.suggestName("m_axi_wready")
+  io.pins.wstrb.suggestName("m_axi_wstrb")
+  io.pins.wvalid.suggestName("m_axi_wvalid")
   //
   // IO plumbing
-  io.araddr := mAxiPort.ar.bits.addr
-  mAxiPort.ar.ready := io.arready
-  io.arvalid := mAxiPort.ar.valid
-  io.awaddr := mAxiPort.aw.bits.addr
-  mAxiPort.aw.ready := io.awready
-  io.awvalid := mAxiPort.aw.valid
-  io.bready := mAxiPort.b.ready
-  mAxiPort.b.bits.resp := io.bresp
-  mAxiPort.b.valid := io.bvalid
-  mAxiPort.r.bits.data := io.rdata
-  io.rready := mAxiPort.r.ready
-  mAxiPort.r.bits.resp := io.rresp
-  mAxiPort.r.valid := io.rvalid
-  io.wdata := mAxiPort.w.bits.data
-  mAxiPort.w.ready := io.wready
-  io.wstrb := mAxiPort.w.bits.strb
-  io.wvalid := mAxiPort.w.valid
+  io.pins.araddr := mAxiPort.ar.bits.addr
+  mAxiPort.ar.ready := io.pins.arready
+  io.pins.arvalid := mAxiPort.ar.valid
+  io.pins.awaddr := mAxiPort.aw.bits.addr
+  mAxiPort.aw.ready := io.pins.awready
+  io.pins.awvalid := mAxiPort.aw.valid
+  io.pins.bready := mAxiPort.b.ready
+  mAxiPort.b.bits.resp := io.pins.bresp
+  mAxiPort.b.valid := io.pins.bvalid
+  mAxiPort.r.bits.data := io.pins.rdata
+  io.pins.rready := mAxiPort.r.ready
+  mAxiPort.r.bits.resp := io.pins.rresp
+  mAxiPort.r.valid := io.pins.rvalid
+  io.pins.wdata := mAxiPort.w.bits.data
+  mAxiPort.w.ready := io.pins.wready
+  io.pins.wstrb := mAxiPort.w.bits.strb
+  io.pins.wvalid := mAxiPort.w.valid
 
 }
 
