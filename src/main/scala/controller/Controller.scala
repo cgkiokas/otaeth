@@ -15,6 +15,7 @@ object Constants {
   def RX_FRAME_START = "x1000".U(64.W)
   def RX_FRAME_END = "x17FB".U(64.W)
   def RX_FRAME_SIZE = "x100c".U(64.W)
+  def RX_IP_LENGTH = "x1010".U(64.W)
 
   def STATUS_BIT = "x17FC".U(64.W)
   def TX_BIT = "x07FC".U(64.W)
@@ -174,6 +175,7 @@ class Controller extends Module {
   val slaveStatusBits = RegInit(VecInit(Seq.fill(4)(0.U(32.W))))
   val slaveDataValids = RegInit(VecInit(Seq.fill(4)(false.B)))
   val rxFrameLength = RegInit(VecInit(Seq.fill(4)(0.U(32.W))))
+  val isIP = RegInit(VecInit(Seq.fill(4)(false.B)))
 
   val PeriodReg1 = RegInit(port1Act)
   val PeriodReg2 = RegInit(port2Act)
@@ -642,11 +644,25 @@ class Controller extends Module {
 
         delayReg := delayReg + 1.U
 
-        when(memCountersRx(srcPort) === Constants.RX_FRAME_SIZE)
-        {
-          rxFrameLength(srcPort)  := 12.U + Cat(slaveDataRegs(srcPort)(7,0), slaveDataRegs(srcPort)(15,8))
-          //rxFrameLength(srcPort)  := 256.U
+        when(memCountersRx(srcPort) === Constants.RX_FRAME_SIZE) {
+          when(Cat(slaveDataRegs(srcPort)(7, 0), slaveDataRegs(srcPort)(15, 8)) === "x800".U) {
+            isIP(srcPort) := true.B
+          }.otherwise {
+            isIP(srcPort) := false.B
+          }
         }
+
+        when(isIP(srcPort))
+        {
+          when(memCountersRx(srcPort) === Constants.RX_IP_LENGTH) {
+            rxFrameLength(srcPort) := 12.U + Cat(slaveDataRegs(srcPort)(7, 0), slaveDataRegs(srcPort)(15, 8))
+          }
+        }.otherwise{
+          when(memCountersRx(srcPort) === Constants.RX_FRAME_SIZE) {
+            rxFrameLength(srcPort)  := 12.U + Cat(slaveDataRegs(srcPort)(7, 0), slaveDataRegs(srcPort)(15, 8))
+          }
+        }
+
 
         when(memCountersRx(srcPort) >=  (Constants.RX_FRAME_START + (12.U + (rxFrameLength(srcPort)/4.U)))   ){
             transmssionStates(srcPort) := writeLength
@@ -719,6 +735,7 @@ class Controller extends Module {
         sendPacket(destPort) := false.B
         transmssionStates(srcPort) := poll
         slaveStatusBits(srcPort) := 0.U
+        isIP(srcPort) := false.B
       }
     }
   }
