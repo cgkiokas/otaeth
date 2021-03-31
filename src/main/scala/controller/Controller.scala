@@ -19,27 +19,15 @@ object Constants {
 
   def STATUS_BIT = "x17FC".U(64.W)
   def TX_BIT = "x07FC".U(64.W)
+
+  def MDIO_ADDR_REG = "x07E4".U(64.W)
+  def MDIO_WRITE_REG = "x07E8".U(64.W)
+  def MDIO_READ_REG = "x07EC".U(64.W)
+  def MDIO_CTRL_ADDR = "x07F0".U(64.W)
 }
-//00-00-5E-00-FA-CE
-
-//class AxiMasterControlSignals(addrWidth: Int, dataWidth: Int) extends Bundle {
-//  val read = (Bool())
-//  val write = (Bool())
-//  val address = (UInt(addrWidth.W))
-//  val data = (UInt(dataWidth.W))
-//  val slaveData = (UInt(dataWidth.W))
-//  val byteEn = (UInt((dataWidth/4).W))
-//  val dataValid = (Bool())
-
-//  override def cloneType() = {
-//    val res = new AxiMasterControlSignals(addrWidth,dataWidth)
-//    res.asInstanceOf[this.type]
-//  }
-//}
 
 
-
-class AxiMasterOutSignals(addrWidth: Int, dataWidth: Int) extends Bundle {
+class xiMasterOutSignals(addrWidth: Int, dataWidth: Int) extends Bundle {
   val araddr = Output(UInt(addrWidth.W))
   val arready = Input(Bool())
   val arvalid = Output(Bool())
@@ -95,11 +83,10 @@ class Controller extends Module {
     val debugPeriodReg3 = Output(UInt(32.W))
     val debugPeriodReg4 = Output(UInt(32.W))
 
+
   })
 
   val leds = RegInit(VecInit(Seq.fill(4)(false.B)));
-
-
 
 
   io.led1 := leds(0)
@@ -192,12 +179,16 @@ class Controller extends Module {
   val startPort3 = RegInit(false.B)
   val startPort4 = RegInit(false.B)
 
-
+  val mdioConfigReg = RegInit(0.U(16.W))
+  val startMDIOConfig = RegInit(false.B)
 
   val delayReg = RegInit(0.U(32.W))
 
   val poll::rxDelay::readRX::writeTX::writeLength::writeStatus::writeStatus2::Nil = Enum(7)
   val transmssionStates = RegInit(VecInit(Seq.fill(4)(poll)))
+
+  val nop::writeAddrMDIO::writeDataMDIO::writeStatusMDIO::end::Nil = Enum(5)
+  val mdioWriteStates = RegInit(nop)
 
   val txLengthCounter = RegInit(VecInit(Seq.fill(4)(0.U(32.W))))
 
@@ -206,14 +197,9 @@ class Controller extends Module {
   val mOcpReg = RegInit(io.patmosInterface.M)
   val mOcpAddr = RegInit(0.U(16.W))
   val mOcpData = RegInit(0.U(32.W))
-  //register patmos inputs
+
   mOcpReg := io.patmosInterface.M
-
-//  nanoReg := io.timerInput(31,0)
-//  secondsReg := io.timerInput(63,32)
-
   respReg := OcpResp.NULL
-
   io.patmosInterface.S.Data := dataReg
   io.patmosInterface.S.Resp := respReg
 
@@ -230,6 +216,9 @@ class Controller extends Module {
   val stopped::cmd::dva::Nil = Enum(3)
   val controlState = RegInit(idle)
   val isWrite = RegInit(false.B)
+
+  val mdioDevCounter = RegInit(32.U(8.W))
+  val mdioDelayCounter = RegInit(0.U(32.W))
 
   when(mOcpReg.Cmd === OcpCmd.RD || mOcpReg.Cmd === OcpCmd.WR) {
     mOcpAddr := mOcpReg.Addr(6,0)
@@ -431,6 +420,14 @@ class Controller extends Module {
             dataReg := 1.U
           }
         }
+        is("x44".U(16.W)) {
+          when(isWrite){
+            mdioConfigReg := mOcpData(15,0)
+            startMDIOConfig := true.B
+          }.otherwise{
+            dataReg := mdioConfigReg
+          }
+        }
       }
       controlState := dva;
     }
@@ -467,14 +464,7 @@ class Controller extends Module {
     PeriodReg4 := Mux((io.timerInput > PeriodReg4) && startFlag, PeriodReg4 + port4T, PeriodReg4)
   }
 
-//  when(resetFlag){
-//    PeriodReg1 := PeriodReg1Config
-//    PeriodReg2 := PeriodReg2Config
-//    PeriodReg3 := PeriodReg3Config
-//    PeriodReg4 := PeriodReg4Config
-//  }.otherwise{
-//
-//  }
+
 
   when(io.timerInput >= PeriodReg1 && startFlag)
   {
@@ -512,48 +502,18 @@ class Controller extends Module {
     startPort4 := startPort4
   }
 
-//  when(startFlag)
-//  {
-//    when(io.timerInput(31,0) >= PeriodReg1 ){
-//      startPort1 := true.B
-//      PeriodReg1 := PeriodReg1 + port1T
-//    }.elsewhen(io.timerInput(31,0) >= PeriodReg2 ){
-//      startPort2 := true.B
-//      PeriodReg2 := PeriodReg2 + port2T
-//    }.elsewhen(io.timerInput(31,0) >= PeriodReg3){
-//      startPort3 := true.B
-//      PeriodReg3 := PeriodReg3 + port3T
-//    }.elsewhen(io.timerInput(31,0) >= PeriodReg4){
-//      startPort4 := true.B
-//      PeriodReg4 := PeriodReg4 + port4T
-//    }.otherwise{
-//      startPort1 := false.B
-//      startPort2 := false.B
-//      startPort3 := false.B
-//      startPort4 := false.B
-//    }
-//  }.otherwise{
-//    startPort1 := false.B
-//    startPort2 := false.B
-//    startPort3 := false.B
-//    startPort4 := false.B
-//  }
 
-
-
-
+  when(startMDIOConfig){
+    portStateMachine(0)
+  }
 
   when(startPort1)
   {
     port1WindowCounterReg := port1WindowCounterReg +1.U
     when(port1WindowDone){
       port1WindowCounterReg := 0.U
-//      startPort1 := false.B
       stateReg1 := stateReg1next
     }
-    //send any messages that need to be send
-    //read poll { if packet arrive send to coresponding port }
-    //continue reading poll?
     portStateMachine(0)
 
   }
@@ -562,7 +522,6 @@ class Controller extends Module {
     port2WindowCounterReg := port2WindowCounterReg +1.U
     when(port2WindowDone){
       port2WindowCounterReg := 0.U
-//      startPort2 := false.B
       stateReg2 := stateReg2next
     }
     portStateMachine(1)
@@ -573,7 +532,6 @@ class Controller extends Module {
     port3WindowCounterReg := port3WindowCounterReg + 1.U
     when(port3WindowDone){
       port3WindowCounterReg := 0.U
-//      startPort3 := false.B
       stateReg3 := stateReg3next
     }
     portStateMachine(2)
@@ -583,7 +541,6 @@ class Controller extends Module {
     port4WindowCounterReg := port4WindowCounterReg +1.U
     when(port4WindowDone){
       port4WindowCounterReg := 0.U
-//      startPort4 := false.B
       stateReg4 := stateReg4next
     }
    portStateMachine(3)
@@ -598,22 +555,79 @@ class Controller extends Module {
     switch(transmssionStates(srcPort))
     {
       is(poll){
+        when(startMDIOConfig && (srcPort == 0).B){
+          switch(mdioWriteStates) {
+            is(nop) {
+              mdioWriteStates := writeAddrMDIO
+            }
+            is(writeAddrMDIO) {
 
-        delayReg := 0.U
-        io.ocpMasters(srcPort).M.Cmd := OcpCmd.RD
-        io.ocpMasters(srcPort).M.Addr := Constants.STATUS_BIT
-        rxFrameLength(srcPort) := Constants.RX_FRAME_END
-        when(io.ocpMasters(srcPort).S.Resp === OcpResp.DVA){
-          slaveStatusBits(srcPort) :=  io.ocpMasters(srcPort).S.Data
+              io.ocpMasters(0).M.Cmd := OcpCmd.WR
+              io.ocpMasters(0).M.Addr:= Constants.MDIO_ADDR_REG
+              io.ocpMasters(0).M.Data := mdioDevCounter
+              io.ocpMasters(0).M.ByteEn := "xFFFF".U
+
+              when(io.ocpMasters(0).S.Resp === OcpResp.DVA){
+                mdioWriteStates := writeDataMDIO
+              }
+
+
+            }
+            is(writeDataMDIO){
+
+              io.ocpMasters(0).M.Cmd := OcpCmd.WR
+              io.ocpMasters(0).M.Addr:= Constants.MDIO_WRITE_REG
+              io.ocpMasters(0).M.Data := 8448.U
+              io.ocpMasters(0).M.ByteEn := "xFFFF".U
+
+
+
+              when(io.ocpMasters(0).S.Resp === OcpResp.DVA){
+                mdioWriteStates := writeStatusMDIO
+              }
+            }
+            is(writeStatusMDIO){
+
+              io.ocpMasters(0).M.Cmd := OcpCmd.WR
+              io.ocpMasters(0).M.Addr:= Constants.MDIO_CTRL_ADDR
+              io.ocpMasters(0).M.Data := 9.U
+              io.ocpMasters(0).M.ByteEn := "xFFFF".U
+
+              mdioDelayCounter := mdioDelayCounter + 1.U
+              when(mdioDelayCounter > 10000.U){
+                mdioDelayCounter := 0.U
+                when(mdioDevCounter === 128.U){
+                  mdioDevCounter := 32.U
+                  mdioWriteStates := end
+                }.otherwise{
+                  mdioDevCounter := mdioDevCounter + 32.U
+                  mdioWriteStates := writeAddrMDIO
+                }
+              }
+
+            }
+            is(end) {
+              mdioWriteStates := nop
+              startMDIOConfig := false.B
+
+            }
+          }
+        }.otherwise {
+          delayReg := 0.U
+          io.ocpMasters(srcPort).M.Cmd := OcpCmd.RD
+          io.ocpMasters(srcPort).M.Addr := Constants.STATUS_BIT
+          rxFrameLength(srcPort) := Constants.RX_FRAME_END
+          when(io.ocpMasters(srcPort).S.Resp === OcpResp.DVA) {
+            slaveStatusBits(srcPort) := io.ocpMasters(srcPort).S.Data
+          }
+
+          when(slaveStatusBits(srcPort) === 1.U) {
+
+            transmssionStates(srcPort) := rxDelay
+            io.ocpMasters(srcPort).M.Cmd := OcpCmd.IDLE
+            io.ocpMasters(srcPort).M.Addr := memCountersRx(srcPort)
+          }
         }
-
-        when(slaveStatusBits(srcPort) === 1.U) {
-
-          transmssionStates(srcPort) := rxDelay
-          io.ocpMasters(srcPort).M.Cmd := OcpCmd.IDLE
-          io.ocpMasters(srcPort).M.Addr := memCountersRx(srcPort)
-        }
-
       }
       is(rxDelay){
         delayReg := delayReg + 1.U
@@ -640,8 +654,6 @@ class Controller extends Module {
         io.ocpMasters(destPort).M.Addr:= memCountersTx(destPort)
         io.ocpMasters(destPort).M.Data := slaveDataRegs(srcPort)
         io.ocpMasters(destPort).M.ByteEn := "xFFFF".U
-
-
         delayReg := delayReg + 1.U
 
         when(memCountersRx(srcPort) === Constants.RX_FRAME_SIZE) {
@@ -655,16 +667,15 @@ class Controller extends Module {
         when(isIP(srcPort))
         {
           when(memCountersRx(srcPort) === Constants.RX_IP_LENGTH) {
-            rxFrameLength(srcPort) := 12.U + Cat(slaveDataRegs(srcPort)(7, 0), slaveDataRegs(srcPort)(15, 8))
+            rxFrameLength(srcPort) := 14.U + Cat(slaveDataRegs(srcPort)(7, 0), slaveDataRegs(srcPort)(15, 8)).asUInt()
           }
         }.otherwise{
           when(memCountersRx(srcPort) === Constants.RX_FRAME_SIZE) {
-            rxFrameLength(srcPort)  := 12.U + Cat(slaveDataRegs(srcPort)(7, 0), slaveDataRegs(srcPort)(15, 8))
+            rxFrameLength(srcPort)  := 12.U + Cat(slaveDataRegs(srcPort)(7, 0), slaveDataRegs(srcPort)(15, 8)).asUInt()
           }
         }
 
-
-        when(memCountersRx(srcPort) >=  (Constants.RX_FRAME_START + (12.U + (rxFrameLength(srcPort)/4.U)))   ){
+        when(memCountersRx(srcPort) >  (Constants.RX_FRAME_START + rxFrameLength(srcPort))   ){
             transmssionStates(srcPort) := writeLength
             delayReg := 0.U
 
