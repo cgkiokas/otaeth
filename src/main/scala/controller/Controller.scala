@@ -27,7 +27,7 @@ object Constants {
 }
 
 
-class xiMasterOutSignals(addrWidth: Int, dataWidth: Int) extends Bundle {
+class AxiMasterOutSignals(addrWidth: Int, dataWidth: Int) extends Bundle {
   val araddr = Output(UInt(addrWidth.W))
   val arready = Input(Bool())
   val arvalid = Output(Bool())
